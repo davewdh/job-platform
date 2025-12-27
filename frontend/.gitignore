@@ -1,0 +1,33 @@
+# Node.js / Frontend
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+build/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Log files
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build output
+build/
+coverage/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
