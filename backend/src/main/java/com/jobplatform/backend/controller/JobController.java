@@ -1,68 +1,42 @@
 package com.jobplatform.backend.controller;
 
 import com.jobplatform.backend.dto.JobResponseDto;
-import com.jobplatform.backend.model.Job;
-import com.jobplatform.backend.model.JobStatus;
+import com.jobplatform.backend.model.JobScenario;
 import com.jobplatform.backend.service.JobService;
-import org.springframework.http.ResponseEntity;
+import java.util.List;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.stream.Collectors;
-
 @RestController
-@RequestMapping("/jobs")
+@RequestMapping({"/jobs", "/api/jobs"})
 public class JobController {
+    private final JobService jobs;
+    public JobController(JobService jobs) { this.jobs = jobs; }
 
-    private final JobService jobService;
-
-    public JobController(JobService jobService) {
-        this.jobService = jobService;
-    }
-
-    // Create a new job
     @PostMapping
-    public ResponseEntity<JobResponseDto> createJob(@RequestParam String name) {
-        Job job = jobService.createJob(name);
-        return ResponseEntity.ok(convertToDto(job));
+    @ResponseStatus(HttpStatus.CREATED)
+    public JobResponseDto create(@RequestParam String name,
+            @RequestParam(defaultValue = "SUCCESS") JobScenario scenario) {
+        return jobs.createJob(name, scenario);
     }
 
-    // Get a job by ID
     @GetMapping("/{id}")
-    public ResponseEntity<JobResponseDto> getJob(@PathVariable Long id) {
-        Job job = jobService.getJob(id);
-        return ResponseEntity.ok(convertToDto(job));
-    }
+    public JobResponseDto get(@PathVariable Long id) { return jobs.getJob(id); }
 
-    // Get all jobs
     @GetMapping
-    public ResponseEntity<List<JobResponseDto>> getAllJobs() {
-        List<JobResponseDto> jobs = jobService.getAllJobs()
-                .stream()
-                .map(this::convertToDto)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(jobs);
+    public List<JobResponseDto> list() { return jobs.getAllJobs(); }
+
+    @PostMapping({"/{id}/retry", "/{id}/reprocess-dlq"})
+    public JobResponseDto reprocess(@PathVariable Long id, @RequestParam(required = false) JobScenario scenario) {
+        return jobs.requeue(id, scenario);
     }
 
-    // Update job status
-    @PutMapping("/{id}/status")
-    public ResponseEntity<JobResponseDto> updateJobStatus(
-            @PathVariable Long id,
-            @RequestParam JobStatus status
-    ) {
-        Job job = jobService.updateJobStatus(id, status);
-        return ResponseEntity.ok(convertToDto(job));
-    }
-
-    // Convert entity to DTO
-    private JobResponseDto convertToDto(Job job) {
-        JobResponseDto dto = new JobResponseDto();
-        dto.setId(job.getId());
-        dto.setName(job.getName());
-        dto.setStatus(job.getStatus().name());
-        dto.setCreatedAt(job.getCreatedAt());
-        dto.setUpdatedAt(job.getUpdatedAt());
-        dto.setRetryCount(job.getRetryCount());
-        return dto;
+    @PostMapping("/generate-test")
+    @ResponseStatus(HttpStatus.CREATED)
+    public List<JobResponseDto> demo() {
+        return List.of(
+                jobs.createJob("Successful job", JobScenario.SUCCESS),
+                jobs.createJob("Retries once", JobScenario.FAIL_ONCE),
+                jobs.createJob("Dead-letter example", JobScenario.EXHAUST_RETRIES));
     }
 }

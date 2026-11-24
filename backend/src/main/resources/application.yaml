@@ -1,0 +1,19 @@
+spring:
+  datasource:
+    url: ${JOB_DATABASE_URL:jdbc:postgresql://localhost:5432/jobplatform}
+    username: ${JOB_DATABASE_USER:postgres}
+    password: ${JOB_DATABASE_PASSWORD:yourpassword}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: update
+  kafka:
+    bootstrap-servers: ${JOB_KAFKA_SERVERS:localhost:9092}
+    consumer:
+      group-id: job-platform
+      auto-offset-reset: earliest
+  mvc:
+    problemdetails:
+      enabled: true
+job:
+  frontend-origin: ${JOB_FRONTEND_ORIGIN:http://localhost:3000}

@@ -1,74 +1,93 @@
 package com.jobplatform.backend.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jobplatform.backend.model.Job;
-import com.jobplatform.backend.model.JobStatus;
-import com.jobplatform.backend.repository.JobRepository;
+import com.jobplatform.backend.dto.JobResponseDto;
 import com.jobplatform.backend.exception.JobNotFoundException;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.stereotype.Service;
-
+import com.jobplatform.backend.model.*;
+import com.jobplatform.backend.repository.JobRepository;
+import java.time.Instant;
 import java.util.List;
-import java.util.Map;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class JobService {
+    private final JobRepository repository;
+    private final ApplicationEventPublisher events;
+    private final SimpMessagingTemplate messaging;
 
-    private static final String JOB_TOPIC = "job-events";
-
-    private final JobRepository jobRepository;
-    private final KafkaTemplate<String, String> kafkaTemplate;
-    private final ObjectMapper objectMapper;
-
-    public JobService(JobRepository jobRepository,
-                      KafkaTemplate<String, String> kafkaTemplate,
-                      ObjectMapper objectMapper) {
-        this.jobRepository = jobRepository;
-        this.kafkaTemplate = kafkaTemplate;
-        this.objectMapper = objectMapper;
+    public JobService(JobRepository repository, ApplicationEventPublisher events, SimpMessagingTemplate messaging) {
+        this.repository = repository;
+        this.events = events;
+        this.messaging = messaging;
     }
 
-    public Job createJob(String name) {
-        Job job = new Job(name);
-        Job savedJob = jobRepository.save(job);
-
-        publishEvent(savedJob, "CREATED");
-        return savedJob;
-    }
-
-    public Job getJob(Long id) {
-        return jobRepository.findById(id)
-                .orElseThrow(() -> new JobNotFoundException("Job not found with id: " + id));
-    }
-
-    public List<Job> getAllJobs() {
-        return jobRepository.findAll();
-    }
-
-    public Job updateJobStatus(Long id, JobStatus status) {
-        Job job = getJob(id);
-        job.setStatus(status);
-        Job updatedJob = jobRepository.save(job);
-
-        publishEvent(updatedJob, "STATUS_UPDATED");
-        return updatedJob;
-    }
-
-    private void publishEvent(Job job, String eventType) {
-        try {
-            Map<String, Object> payload = Map.of(
-                    "jobId", job.getId(),
-                    "name", job.getName(),
-                    "status", job.getStatus().name(),
-                    "eventType", eventType,
-                    "timestamp", System.currentTimeMillis()
-            );
-
-            String message = objectMapper.writeValueAsString(payload);
-            kafkaTemplate.send(JOB_TOPIC, message);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("Failed to publish Kafka event", e);
+    @Transactional
+    public JobResponseDto createJob(String name, JobScenario scenario) {
+        if (name == null || name.isBlank() || name.strip().length() > 120) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Enter a job name of 1 to 120 characters.");
         }
+        return announce(repository.save(new Job(name.strip(), scenario, Instant.now())));
+    }
+
+    @Transactional(readOnly = true)
+    public JobResponseDto getJob(Long id) {
+        return JobResponseDto.from(repository.findById(id).orElseThrow(() -> missing(id)));
+    }
+
+    @Transactional(readOnly = true)
+    public List<JobResponseDto> getAllJobs() {
+        return repository.findAllByOrderByIdDesc(PageRequest.of(0, 200))
+                .stream().map(JobResponseDto::from).toList();
+    }
+
+    @Transactional
+    public JobResponseDto requeue(Long id, JobScenario scenario) {
+        Job job = repository.lockById(id).orElseThrow(() -> missing(id));
+        if (job.getStatus() != JobStatus.FAILED || job.getDeadLetteredAt() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Only jobs recorded in the dead-letter queue can be requeued.");
+        }
+        job.requeue(scenario, Instant.now());
+        return announce(job);
+    }
+
+    @Transactional
+    public boolean start(JobMessage message) {
+        Job job = repository.lockById(message.jobId()).orElse(null);
+        Instant now = Instant.now();
+        if (job == null || !job.accepts(message.run(), message.attempt(), now)) return false;
+        job.startAttempt(now);
+        announce(job);
+        return true;
+    }
+
+    @Transactional
+    public void finish(JobMessage message) {
+        repository.lockById(message.jobId()).ifPresent(job -> {
+            if (job.getStatus() == JobStatus.PROCESSING && job.matches(message.run(), message.attempt())) {
+                job.recordAttempt(Instant.now());
+                announce(job);
+            }
+        });
+    }
+
+    JobResponseDto announce(Job job) {
+        JobResponseDto snapshot = JobResponseDto.from(job);
+        events.publishEvent(snapshot);
+        return snapshot;
+    }
+
+    @TransactionalEventListener
+    public void broadcast(JobResponseDto job) {
+        messaging.convertAndSend("/topic/jobs", job);
+    }
+
+    private JobNotFoundException missing(Long id) {
+        return new JobNotFoundException("Job not found with id: " + id);
     }
 }
